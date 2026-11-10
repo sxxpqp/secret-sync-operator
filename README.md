@@ -1,6 +1,14 @@
 # Secret Sync Operator
 
-用 Go + controller-runtime 实现的 Kubernetes Secret 跨命名空间同步 Operator。独立项目，与 file-s3-backup 无关。
+用 Go + controller-runtime 实现的 Kubernetes Secret 跨命名空间同步 Operator。
+
+## 核心能力
+
+- 一份源 Secret 同步到多个目标命名空间，目标与源同名，只同步 `data` 和 `type`
+- 支持 Opaque、TLS（`kubernetes.io/tls`）、dockerconfigjson 等类型
+- 监听源更新自动传播，监听目标漂移/误删自动修复，每 30 秒周期性核对
+- 不覆盖非受管同名 Secret；删除源、规则或移除目标时保留副本、不自动删除
+- 结构化日志记录每次同步（创建/更新），不输出 Secret 数据内容
 
 ## 同步规则
 
@@ -24,7 +32,7 @@
 
 ## 构建和验证
 
-需要 Go 1.26 和 Docker。依赖固定 controller-runtime v0.24.1 / Kubernetes Go API v0.36.0；这不是在目标集群验证通过的版本声明。实际安装前应在使用的 Kubernetes 版本执行 server-side dry-run 和测试。
+需要 Go 1.26 和 Docker。依赖固定 controller-runtime v0.24.1 / Kubernetes Go API v0.36.0；这不是在目标集群验证通过的版本声明。实际安装前应在使用的 Kubernetes 版本执行 server-side dry-run 和测试。Dockerfile 构建阶段已配置 `goproxy.cn` 加速 Go 模块下载。
 
 ```bash
 go mod download
@@ -38,15 +46,16 @@ go build -o bin/manager ./cmd
 #   make build       # 编译 manager
 
 # 替换为你自己的镜像仓库，先登录再推送
-docker build -t YOUR-REGISTRY/secret-sync-operator:0.1.0 .
-docker push YOUR-REGISTRY/secret-sync-operator:0.1.0
+# 阿里云 ACR 需关闭 BuildKit provenance/sbom，否则会报 OCI empty manifest 错误
+docker buildx build --provenance=false --sbom=false -t YOUR-REGISTRY/secret-sync-operator:0.1.1 --load .
+docker push YOUR-REGISTRY/secret-sync-operator:0.1.1
 ```
 
 回归测试使用 controller-runtime fake client，覆盖创建、更新、漂移修复、误删补回、同名冲突、UID 冲突、不可变目标、源/规则删除保留、目标移除、非法源和事件映射。fake client 不替代真实 API Server 的 CRD、RBAC、watch 和准入验证。
 
 ## 安装
 
-镜像地址在 config/default/kustomization.yaml 的 images 字段里配置（默认 ghcr.io/sxxpqp/secret-sync-operator:0.1.0），也可以用 `make deploy IMG=<完整地址>` 覆盖。私有镜像需要在 secret-sync-system 配置拉取凭据并添加 imagePullSecrets。默认只有一个副本，开启 leader election；Lease 和事件权限限定在 secret-sync-system。容器非 root、只读根文件系统，健康检查端口为 8081，指标端点关闭。
+镜像地址在 config/default/kustomization.yaml 的 images 字段里配置（默认 registry.cn-hangzhou.aliyuncs.com/sxxpqp/secret-sync-operator:0.1.1），也可以用 `make deploy IMG=<完整地址>` 覆盖。私有镜像需要在 secret-sync-system 配置拉取凭据并添加 imagePullSecrets。默认只有一个副本，开启 leader election；Lease 和事件权限限定在 secret-sync-system。容器非 root、只读根文件系统，健康检查端口为 8081，指标端点关闭。
 
 ```bash
 kubectl apply --dry-run=server -f config/crd/bases/sync.secrets.io_secretsyncs.yaml
