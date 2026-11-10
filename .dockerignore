@@ -1,0 +1,13 @@
+.git
+.gitignore
+.github
+bin
+testbin
+*.exe
+*.dll
+*.so
+*.dylib
+.env
+kubeconfig
+.idea
+.vscode

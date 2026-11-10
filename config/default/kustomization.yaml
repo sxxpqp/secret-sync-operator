@@ -1,0 +1,14 @@
+# Adds namespace to all resources.
+namespace: secret-sync-system
+
+resources:
+- ../crd
+- ../rbac
+- ../manager
+
+# The operator image. "make deploy" runs "kustomize edit set image" to
+# replace "controller:latest" in config/manager with the IMG variable.
+images:
+- name: controller
+  newName: registry.cn-hangzhou.aliyuncs.com/sxxpqp/secret-sync-operator
+  newTag: "0.1.0"
