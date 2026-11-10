@@ -11,4 +11,4 @@ resources:
 images:
 - name: controller
   newName: registry.cn-hangzhou.aliyuncs.com/sxxpqp/secret-sync-operator
-  newTag: "0.1.0"
+  newTag: "0.1.1"

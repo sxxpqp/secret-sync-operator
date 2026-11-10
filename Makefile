@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= registry.cn-hangzhou.aliyuncs.com/sxxpqp/secret-sync-operator:0.1.0
+IMG ?= registry.cn-hangzhou.aliyuncs.com/sxxpqp/secret-sync-operator:0.1.1
 
 # CONTAINER_TOOL defines the container tool to be used for building images.
 CONTAINER_TOOL ?= docker
