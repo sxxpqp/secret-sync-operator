@@ -1,0 +1,44 @@
+name: Build and publish image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ACR_REGISTRY: registry.cn-hangzhou.aliyuncs.com
+  ACR_IMAGE: registry.cn-hangzhou.aliyuncs.com/sxxpqp/secret-sync-operator
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Test in Docker
+        run: |
+          docker build --target build -t secret-sync-operator:test .
+          docker run --rm secret-sync-operator:test go test -count=1 ./...
+
+      - name: Build image
+        run: |
+          docker buildx build --load --provenance=false --sbom=false \
+            --tag "${ACR_IMAGE}:sha-${GITHUB_SHA}" .
+
+      - name: Publish to ACR
+        if: github.ref == 'refs/heads/main'
+        env:
+          ALIYUN_REGISTRY_USER: ${{ secrets.ALIYUN_REGISTRY_USER }}
+          ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+        run: |
+          if [[ -z "$ALIYUN_REGISTRY_USER" || -z "$ALIYUN_REGISTRY_PASSWORD" ]]; then
+            echo "::error::Configure the ALIYUN_REGISTRY_USER and ALIYUN_REGISTRY_PASSWORD repository secrets."
+            exit 1
+          fi
+          printf '%s' "$ALIYUN_REGISTRY_PASSWORD" | docker login "$ACR_REGISTRY" --username "$ALIYUN_REGISTRY_USER" --password-stdin
+          docker push "${ACR_IMAGE}:sha-${GITHUB_SHA}"
