@@ -218,21 +218,7 @@ func TestCreateUpdateRepairAndRecreate(t *testing.T) {
 		t.Fatal("deleted target not recreated")
 	}
 }
-func TestUnmanagedAndPreviousOwnerTargetsAreNeverOverwritten(t *testing.T) {
-	for _, annotations := range []map[string]string{nil, {OwnerNamespace: "source", OwnerName: ruleKey.Name, OwnerUID: "old-rule-uid"}} {
-		r, _ := fixture(t)
-		target := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "registry", Annotations: annotations}, Data: map[string][]byte{"keep": []byte("original")}}
-		if err := r.Create(ctx, target); err != nil {
-			t.Fatal(err)
-		}
-		runReconcile(t, r)
-		if string(getTarget(t, r).Data["keep"]) != "original" {
-			t.Fatal("unowned Secret overwritten")
-		}
-		assertReady(t, r, false)
-	}
-}
-func TestAdoptOnlyTargetsMatchingPreviousRule(t *testing.T) {
+func TestAutomaticallyAdoptOnlyTargetsMatchingPreviousRule(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		annotations map[string]string
@@ -246,15 +232,7 @@ func TestAdoptOnlyTargetsMatchingPreviousRule(t *testing.T) {
 		{"unmanaged", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, _ := fixture(t)
-			var rule syncv1.SecretSync
-			if err := r.Get(ctx, ruleKey, &rule); err != nil {
-				t.Fatal(err)
-			}
-			rule.Annotations = map[string]string{AdoptPreviousOwner: "true"}
-			if err := r.Update(ctx, &rule); err != nil {
-				t.Fatal(err)
-			}
+			r, rule := fixture(t)
 			target := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{Namespace: targetKey.Namespace, Name: targetKey.Name, Annotations: tc.annotations},
 				Type:       corev1.SecretTypeOpaque,
