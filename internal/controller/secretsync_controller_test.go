@@ -1,8 +1,16 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"math/big"
 	"testing"
+	"time"
 
 	syncv1 "github.com/sxxpqp/secret-sync-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -64,6 +72,96 @@ func assertReady(t *testing.T, r *SecretSyncReconciler, want bool) {
 	}
 	if meta.IsStatusConditionTrue(rule.Status.Conditions, "Ready") != want {
 		t.Fatalf("unexpected status: %+v", rule.Status)
+	}
+}
+
+func TestInvalidTLSRetainsTargetAndValidRenewalResumesSync(t *testing.T) {
+	r, _ := fixture(t)
+	key := types.NamespacedName{Namespace: ruleKey.Namespace, Name: targetKey.Name}
+	if err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	original := testTLSData(t, now.Add(-time.Hour), now.Add(time.Hour))
+	renewed := testTLSData(t, now.Add(-time.Hour), now.Add(2*time.Hour))
+	source := corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name},
+		Type:       corev1.SecretTypeTLS,
+		Data:       original,
+	}
+	if err := r.Create(ctx, &source); err != nil {
+		t.Fatal(err)
+	}
+	runReconcile(t, r)
+	assertReady(t, r, true)
+
+	updateSource := func(data map[string][]byte) {
+		t.Helper()
+		source.Data = data
+		if err := r.Update(ctx, &source); err != nil {
+			t.Fatal(err)
+		}
+		runReconcile(t, r)
+	}
+	badChain := bytes.Join([][]byte{renewed[corev1.TLSCertKey], pem.EncodeToMemory(&pem.Block{
+		Type: "CERTIFICATE", Bytes: []byte("invalid DER"),
+	})}, nil)
+
+	for _, tc := range []struct {
+		name string
+		data map[string][]byte
+	}{
+		{"malformed certificate", map[string][]byte{corev1.TLSCertKey: []byte("invalid PEM"), corev1.TLSPrivateKeyKey: renewed[corev1.TLSPrivateKeyKey]}},
+		{"malformed chain certificate", map[string][]byte{corev1.TLSCertKey: badChain, corev1.TLSPrivateKeyKey: renewed[corev1.TLSPrivateKeyKey]}},
+		{"mismatched key", map[string][]byte{corev1.TLSCertKey: renewed[corev1.TLSCertKey], corev1.TLSPrivateKeyKey: original[corev1.TLSPrivateKeyKey]}},
+		{"expired", testTLSData(t, now.Add(-2*time.Hour), now.Add(-time.Hour))},
+		{"not yet valid", testTLSData(t, now.Add(time.Hour), now.Add(2*time.Hour))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			updateSource(tc.data)
+			var rule syncv1.SecretSync
+			if err := r.Get(ctx, ruleKey, &rule); err != nil {
+				t.Fatal(err)
+			}
+			ready := meta.FindStatusCondition(rule.Status.Conditions, "Ready")
+			if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != "InvalidTLS" {
+				t.Fatalf("expected Ready=False with InvalidTLS, got %+v", ready)
+			}
+			target := getTarget(t, r)
+			if !bytes.Equal(target.Data[corev1.TLSCertKey], original[corev1.TLSCertKey]) ||
+				!bytes.Equal(target.Data[corev1.TLSPrivateKeyKey], original[corev1.TLSPrivateKeyKey]) {
+				t.Fatal("invalid TLS data changed the target")
+			}
+		})
+	}
+
+	updateSource(renewed)
+	assertReady(t, r, true)
+	target := getTarget(t, r)
+	if !bytes.Equal(target.Data[corev1.TLSCertKey], renewed[corev1.TLSCertKey]) ||
+		!bytes.Equal(target.Data[corev1.TLSPrivateKeyKey], renewed[corev1.TLSPrivateKeyKey]) {
+		t.Fatal("renewed TLS data did not reach the target")
+	}
+}
+
+func testTLSData(t *testing.T, notBefore, notAfter time.Time) map[string][]byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: notBefore, NotAfter: notAfter}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string][]byte{
+		corev1.TLSCertKey:       pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}),
+		corev1.TLSPrivateKeyKey: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
 	}
 }
 

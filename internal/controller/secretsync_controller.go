@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"reflect"
 	"time"
@@ -60,6 +62,11 @@ func (r *SecretSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if source.Type == corev1.SecretTypeServiceAccountToken {
 		return r.report(ctx, &rule, nil, "InvalidSource", "Service account token Secrets cannot be synchronized")
 	}
+	if source.Type == corev1.SecretTypeTLS {
+		if message := invalidTLSMessage(source.Data, time.Now()); message != "" {
+			return r.report(ctx, &rule, nil, "InvalidTLS", message)
+		}
+	}
 	var synced []string
 	for _, ns := range rule.Spec.TargetNamespaces {
 		if ns == rule.Namespace {
@@ -80,6 +87,23 @@ func (r *SecretSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.report(ctx, &rule, synced, "TargetSyncFailed", fmt.Sprintf("%d target(s) failed: check namespace existence, ownership, RBAC and immutability", failures))
 	}
 	return r.report(ctx, &rule, synced, "Synced", "All configured targets are synchronized")
+}
+
+func invalidTLSMessage(data map[string][]byte, now time.Time) string {
+	pair, err := tls.X509KeyPair(data[corev1.TLSCertKey], data[corev1.TLSPrivateKeyKey])
+	if err != nil {
+		return "Source TLS certificate and private key must be valid PEM and match"
+	}
+	for i, der := range pair.Certificate {
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return "Source TLS certificate chain contains an invalid certificate"
+		}
+		if i == 0 && (now.Before(cert.NotBefore) || !now.Before(cert.NotAfter)) {
+			return "Source TLS leaf certificate is outside its validity period"
+		}
+	}
+	return ""
 }
 
 func (r *SecretSyncReconciler) syncTarget(ctx context.Context, rule *syncv1.SecretSync, source *corev1.Secret, namespace string) error {
