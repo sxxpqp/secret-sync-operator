@@ -24,11 +24,12 @@ import (
 )
 
 const (
-	OwnerNamespace = "sync.secrets.io/owner-namespace"
-	OwnerName      = "sync.secrets.io/owner-name"
-	OwnerUID       = "sync.secrets.io/owner-uid"
-	sourceIndex    = "spec.sourceSecretName"
-	retryInterval  = 30 * time.Second
+	OwnerNamespace     = "sync.secrets.io/owner-namespace"
+	OwnerName          = "sync.secrets.io/owner-name"
+	OwnerUID           = "sync.secrets.io/owner-uid"
+	AdoptPreviousOwner = "sync.secrets.io/adopt-previous-owner"
+	sourceIndex        = "spec.sourceSecretName"
+	retryInterval      = 30 * time.Second
 )
 
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update
@@ -126,15 +127,22 @@ func (r *SecretSyncReconciler) syncTarget(ctx context.Context, rule *syncv1.Secr
 	if err != nil {
 		return err
 	}
-	if target.Annotations[OwnerNamespace] != rule.Namespace || target.Annotations[OwnerName] != rule.Name || target.Annotations[OwnerUID] != string(rule.UID) {
+	if target.Annotations[OwnerNamespace] != rule.Namespace || target.Annotations[OwnerName] != rule.Name {
 		return fmt.Errorf("target is owned by someone else")
 	}
-	if reflect.DeepEqual(target.Data, source.Data) && target.Type == source.Type {
+	ownerUID := target.Annotations[OwnerUID]
+	adopting := ownerUID != string(rule.UID)
+	if adopting && (ownerUID == "" || rule.Annotations[AdoptPreviousOwner] != "true") {
+		return fmt.Errorf("target is owned by someone else")
+	}
+	dataChanged := !reflect.DeepEqual(target.Data, source.Data) || target.Type != source.Type
+	if !dataChanged && !adopting {
 		return nil
 	}
-	if target.Immutable != nil && *target.Immutable {
+	if dataChanged && target.Immutable != nil && *target.Immutable {
 		return fmt.Errorf("target is immutable")
 	}
+	target.Annotations[OwnerUID] = string(rule.UID)
 	target.Data = source.DeepCopy().Data
 	target.Type = source.Type
 	// Do not copy ownerReferences, resourceVersion, source labels or annotations.
@@ -195,7 +203,7 @@ func (r *SecretSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&syncv1.SecretSync{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&syncv1.SecretSync{}, builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, predicate.AnnotationChangedPredicate{}))).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForSecret)).
 		Complete(r)
 }

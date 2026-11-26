@@ -17,7 +17,7 @@
 - 监听源 Secret 更新，自动同步所有目标。
 - 监听目标更新或删除，自动修复被修改的内容、补回误删副本；每 30 秒重新核对一次。
 - 目标 namespace 必须已存在，Operator 不创建 namespace。
-- 不覆盖已存在的非托管同名 Secret，也不接管其他规则或旧规则 UID 创建的副本。出现冲突时 Ready=False；其他目标仍会继续同步。
+- 不覆盖已存在的非托管同名 Secret 或其他规则的副本。规则重建后，可在新规则上开启接管，按归属命名空间和规则名称识别原副本。出现冲突时 Ready=False；其他目标仍会继续同步。
 - 源 Secret 删除、规则删除、移除某个目标 namespace、修改源 Secret 名称时，原目标副本保留，停止继续更新。没有自动删除逻辑，RBAC 也没有 Secret delete 权限。
 - 不复制源的 ownerReferences、immutable、标签或注解。目标额外元数据保持不变。没有跨 namespace ownerReference，避免垃圾回收误删副本。
 - 目标 immutable 且内容需要更新时，报告失败；不会先删后建。
@@ -91,6 +91,16 @@ kubectl -n secret-sync-system logs deployment/secret-sync-operator --tail=100
 ```
 
 发生 TargetSyncFailed 时检查目标 namespace 是否存在、Secret 的归属注解、immutable 和 RBAC。不要为了消除冲突直接删除业务正在使用的 Secret；先确认归属和内容，再手动处理。源规则删除重建会生成新 UID，保留的旧副本不会自动接管。
+
+规则重建后，确认旧副本的归属命名空间和规则名称与当前规则一致，再在新规则上开启接管：
+
+```yaml
+metadata:
+  annotations:
+    sync.secrets.io/adopt-previous-owner: "true"
+```
+
+直接应用更新后的规则。Operator 只接管规则指定的目标命名空间中的同名 Secret，要求归属命名空间和规则名匹配，且目标已有非空的归属 UID。无需在规则里填写旧 UID。接管会原地更新归属 UID 与需要同步的数据。确认目标同步完成后，可以移除此注解。日常修改目标命名空间时直接更新现有规则即可保留 UID。
 
 本地调试（需有测试集群 kubeconfig，CRD 已安装）：
 

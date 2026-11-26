@@ -232,6 +232,51 @@ func TestUnmanagedAndPreviousOwnerTargetsAreNeverOverwritten(t *testing.T) {
 		assertReady(t, r, false)
 	}
 }
+func TestAdoptOnlyTargetsMatchingPreviousRule(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		annotations map[string]string
+		wantAdopt   bool
+	}{
+		{"matching old owner", map[string]string{OwnerNamespace: ruleKey.Namespace, OwnerName: ruleKey.Name, OwnerUID: "old-uid"}, true},
+		{"another old UID", map[string]string{OwnerNamespace: ruleKey.Namespace, OwnerName: ruleKey.Name, OwnerUID: "other-uid"}, true},
+		{"different rule", map[string]string{OwnerNamespace: ruleKey.Namespace, OwnerName: "other-rule", OwnerUID: "old-uid"}, false},
+		{"different owner namespace", map[string]string{OwnerNamespace: "other-source", OwnerName: ruleKey.Name, OwnerUID: "old-uid"}, false},
+		{"missing owner UID", map[string]string{OwnerNamespace: ruleKey.Namespace, OwnerName: ruleKey.Name}, false},
+		{"unmanaged", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := fixture(t)
+			var rule syncv1.SecretSync
+			if err := r.Get(ctx, ruleKey, &rule); err != nil {
+				t.Fatal(err)
+			}
+			rule.Annotations = map[string]string{AdoptPreviousOwner: "true"}
+			if err := r.Update(ctx, &rule); err != nil {
+				t.Fatal(err)
+			}
+			target := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Namespace: targetKey.Namespace, Name: targetKey.Name, Annotations: tc.annotations},
+				Type:       corev1.SecretTypeOpaque,
+				Data:       map[string][]byte{"password": []byte("previous")},
+			}
+			if err := r.Create(ctx, target); err != nil {
+				t.Fatal(err)
+			}
+			runReconcile(t, r)
+			assertReady(t, r, tc.wantAdopt)
+			got := getTarget(t, r)
+			if tc.wantAdopt {
+				if got.Annotations[OwnerUID] != string(rule.UID) || string(got.Data["password"]) != "first" {
+					t.Fatal("target ownership and data were not updated")
+				}
+			} else if got.Annotations[OwnerUID] != tc.annotations[OwnerUID] || string(got.Data["password"]) != "previous" {
+				t.Fatal("unmatched target was modified")
+			}
+		})
+	}
+}
+
 func TestSourceAndRuleDeletionRetainTargets(t *testing.T) {
 	r, rule := fixture(t)
 	runReconcile(t, r)
